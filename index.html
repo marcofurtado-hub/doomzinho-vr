@@ -2976,7 +2976,49 @@ function loop(t){
 
     // VR INPUT — read controllers BEFORE update so movement/shoot use latest
     if(inVR){
-        // Player look angle = HEAD direction (used for movement direction)
+        // 1. Read controllers — updates xrYaw and trigger state
+        let triggerNow=false;
+        let moved=false;
+        try{
+            const session=renderer.xr.getSession();
+            if(session){
+                for(const src of session.inputSources){
+                    if(!src.gamepad)continue;
+                    const ax=src.gamepad.axes;
+                    if(src.handedness==='left'&&ax.length>=4){
+                        const x=ax[2],y=ax[3];
+                        // Smaller dead zone + quadratic response curve for finer control
+                        const mag=Math.hypot(x,y);
+                        if(mag>0.08){
+                            const norm=(mag-0.08)/0.92; // 0..1 above deadzone
+                            const scaled=norm*norm; // squared = finer near center
+                            touchMove.str=(x/mag)*scaled;
+                            touchMove.fwd=(-y/mag)*scaled;
+                            moved=true;
+                        }
+                    }
+                    if(src.handedness==='right'){
+                        const trig=src.gamepad.buttons[0];
+                        triggerNow=!!(trig&&trig.pressed);
+                        if(ax.length>=4){
+                            const tx=ax[2];
+                            if(Math.abs(tx)>0.15){
+                                // Smooth turn: linear after deadzone, capped at 2 rad/s
+                                const sgn=Math.sign(tx),mag2=(Math.abs(tx)-0.15)/0.85;
+                                xrYaw-=sgn*mag2*2.0*dt;
+                            }
+                        }
+                    }
+                }
+                if(!moved){touchMove.str=0;touchMove.fwd=0;}
+            }
+        }catch(e){}
+
+        // 2. Apply yaw to rig immediately so head-direction read below is current
+        cameraRig.rotation.y=xrYaw;
+        cameraRig.updateMatrixWorld(true);
+
+        // 3. Read head direction → pl.angle (movement reference)
         try{
             const xrCam=renderer.xr.getCamera();
             const dirV=new THREE.Vector3();
@@ -2984,47 +3026,20 @@ function loop(t){
             pl.angle=Math.atan2(dirV.z,dirV.x);
             pl.pitch=-Math.asin(Math.max(-1,Math.min(1,dirV.y)));
         }catch(e){}
-        // Read XR gamepads
-        try{
-            const session=renderer.xr.getSession();
-            if(session){
-                let moved=false;
-                let triggerNow=false;
-                for(const src of session.inputSources){
-                    if(!src.gamepad)continue;
-                    const ax=src.gamepad.axes;
-                    if(src.handedness==='left'&&ax.length>=4){
-                        const x=ax[2],y=ax[3];
-                        if(Math.hypot(x,y)>0.12){touchMove.str=x;touchMove.fwd=-y;moved=true;}
-                    }
-                    if(src.handedness==='right'){
-                        // Trigger (button 0) → fire / restart
-                        const trig=src.gamepad.buttons[0];
-                        triggerNow=!!(trig&&trig.pressed);
-                        // Right thumbstick X → smooth yaw turn (added to head tracking)
-                        if(ax.length>=4){
-                            const tx=ax[2];
-                            if(Math.abs(tx)>0.15){xrYaw-=tx*1.6*dt;}
-                        }
-                    }
-                }
-                if(!moved){touchMove.str=0;touchMove.fwd=0;}
-                // Edge-detect trigger: press while dead/won restarts the game
-                if(triggerNow&&!_vrTriggerWasDown){
-                    if(state==='dead'){$over.style.display='none';startGame();}
-                    else if(state==='won'){$victory.style.display='none';state='dead';startGame();}
-                }
-                _vrTriggerWasDown=triggerNow;
-                // While playing, hold-trigger = continuous fire
-                if(state==='play'){
-                    const wasDown=mDown;
-                    mDown=triggerNow;
-                    if(mDown&&!wasDown)clicked=true;
-                }else{
-                    mDown=false;
-                }
-            }
-        }catch(e){}
+
+        // 4. Trigger handling (edge-detect for restart, hold for fire)
+        if(triggerNow&&!_vrTriggerWasDown){
+            if(state==='dead'){$over.style.display='none';startGame();}
+            else if(state==='won'){$victory.style.display='none';state='dead';startGame();}
+        }
+        _vrTriggerWasDown=triggerNow;
+        if(state==='play'){
+            const wasDown=mDown;
+            mDown=triggerNow;
+            if(mDown&&!wasDown)clicked=true;
+        }else{
+            mDown=false;
+        }
     }
 
     try{update(dt);}catch(err){console.error('update error:',err);}
