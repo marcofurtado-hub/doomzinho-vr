@@ -142,10 +142,12 @@ body.mobile #crosshair{top:calc(50% - 29px)}
     <div class="panel" id="start-desktop">
         <span class="hd">🥽 modo VR — META QUEST 2</span>
         <p>
-        <span class="hl">CABEÇA</span>: olhar (head tracking)<br>
-        <span class="hl">CONTROLE DIREITO</span>: aponta a arma + <span class="hl">GATILHO</span> atira<br>
-        <span class="hl">THUMBSTICK ESQUERDO</span>: mover (forward / strafe)<br>
-        <span class="hl">A arma fica na sua mão</span> — bullets saem da ponta do controller
+        <span class="hl">CABEÇA</span>: olhar (apenas head tracking)<br>
+        <span class="hl">THUMBSTICK ESQUERDO</span>: mover (frente / atrás / strafe)<br>
+        <span class="hl">GATILHO ESQUERDO</span>: pular<br>
+        <span class="hl">CONTROLE DIREITO</span>: aponta a arma<br>
+        <span class="hl">GATILHO DIREITO</span>: atirar<br>
+        Bullets saem da ponta do controller direito.
         </p>
         <span class="hd" style="margin-top:12px">⚔️ como funciona</span>
         <p>
@@ -2985,29 +2987,30 @@ function loop(t){
                 for(const src of session.inputSources){
                     if(!src.gamepad)continue;
                     const ax=src.gamepad.axes;
-                    if(src.handedness==='left'&&ax.length>=4){
-                        // Linear response — direct stick values, just a small deadzone
-                        const x=ax[2],y=ax[3];
-                        if(Math.hypot(x,y)>0.1){
-                            touchMove.str=x;touchMove.fwd=-y;moved=true;
+                    if(src.handedness==='left'){
+                        // Left thumbstick → movement (linear, small deadzone)
+                        if(ax.length>=4){
+                            const x=ax[2],y=ax[3];
+                            if(Math.hypot(x,y)>0.1){
+                                touchMove.str=x;touchMove.fwd=-y;moved=true;
+                            }
                         }
+                        // Left trigger (button 0) → jump
+                        const lTrig=src.gamepad.buttons[0];
+                        keys[' ']=!!(lTrig&&lTrig.pressed);
                     }
                     if(src.handedness==='right'){
+                        // Right trigger → fire
                         const trig=src.gamepad.buttons[0];
                         triggerNow=!!(trig&&trig.pressed);
-                        if(ax.length>=4){
-                            const tx=ax[2];
-                            // Linear turn: 1.4 rad/s at full push, simple deadzone
-                            if(Math.abs(tx)>0.2)xrYaw-=tx*1.4*dt;
-                        }
                     }
                 }
                 if(!moved){touchMove.str=0;touchMove.fwd=0;}
             }
         }catch(e){}
 
-        // 2. Apply yaw to rig immediately so head-direction read below is current
-        cameraRig.rotation.y=xrYaw;
+        // 2. Rig rotation stays at 0 — head tracking provides ALL view rotation
+        cameraRig.rotation.y=0;
         cameraRig.updateMatrixWorld(true);
 
         // 3. Read head direction → pl.angle (movement reference)
@@ -3090,9 +3093,9 @@ function loop(t){
     }
 
     if(inVR){
-        // Rig at player feet, accumulate yaw from right stick (added to head)
+        // Rig follows player feet — head tracking is the only view rotation
         cameraRig.position.set(pl.x,0,pl.z);
-        cameraRig.rotation.y=xrYaw;
+        cameraRig.rotation.y=0;
     }else{
         // Desktop FPS camera
         const px=state==='play'?pl.x:0,pz=state==='play'?pl.z:0;
