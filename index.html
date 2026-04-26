@@ -380,6 +380,31 @@ camera.add(vrEndUI.sprite);
 
 let _vrLastAnnounce='';
 
+// ===== COMFORT VIGNETTE =====
+// Helmet-like dark frame around peripheral vision. Stays head-locked,
+// giving a stable visual reference that reduces motion sickness during
+// stick-based locomotion. Clear central zone (large), gradient to solid
+// black at the edges.
+function _vrMakeVignette(){
+    const c=document.createElement('canvas');c.width=1024;c.height=1024;
+    const ctx=c.getContext('2d');
+    const grad=ctx.createRadialGradient(512,512,300,512,512,510);
+    grad.addColorStop(0,'rgba(0,0,0,0)');
+    grad.addColorStop(0.55,'rgba(0,0,0,0)');     // wide clear central zone
+    grad.addColorStop(0.85,'rgba(0,0,0,0.7)');   // gradient transition
+    grad.addColorStop(1,'rgba(0,0,0,1)');         // solid black at outer edges
+    ctx.fillStyle=grad;ctx.fillRect(0,0,1024,1024);
+    const tex=new THREE.CanvasTexture(c);
+    const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,depthTest:false,depthWrite:false});
+    const mesh=new THREE.Mesh(new THREE.PlaneGeometry(2.2,2.2),mat);
+    mesh.position.set(0,0,-0.7);
+    mesh.renderOrder=10001; // draw last, after all UI
+    mesh.visible=false;
+    return mesh;
+}
+const vrVignette=_vrMakeVignette();
+camera.add(vrVignette);
+
 let inVR = false;
 // Accumulated rotation from right thumbstick (added to head tracking)
 let xrYaw = 0;
@@ -3043,6 +3068,14 @@ function loop(t){
     fpGun.visible=inVR;
     ctrlMeshL.visible=inVR;
     ctrlMeshR.visible=inVR;
+
+    // Comfort vignette — opacity intensifies during locomotion (anti-nausea)
+    if(inVR){
+        vrVignette.visible=true;
+        const movingFast=Math.hypot(touchMove.fwd,touchMove.str)>0.05||pl.dashT>0||Math.abs(pl.vy)>0.5;
+        const target=movingFast?1.0:0.55; // 55% still, 100% during motion
+        vrVignette.material.opacity+=(target-vrVignette.material.opacity)*dt*4;
+    }else{vrVignette.visible=false;}
 
     // VR UI updates — head-locked sprites
     if(inVR){
