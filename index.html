@@ -2986,15 +2986,10 @@ function loop(t){
                     if(!src.gamepad)continue;
                     const ax=src.gamepad.axes;
                     if(src.handedness==='left'&&ax.length>=4){
+                        // Linear response — direct stick values, just a small deadzone
                         const x=ax[2],y=ax[3];
-                        // Smaller dead zone + quadratic response curve for finer control
-                        const mag=Math.hypot(x,y);
-                        if(mag>0.08){
-                            const norm=(mag-0.08)/0.92; // 0..1 above deadzone
-                            const scaled=norm*norm; // squared = finer near center
-                            touchMove.str=(x/mag)*scaled;
-                            touchMove.fwd=(-y/mag)*scaled;
-                            moved=true;
+                        if(Math.hypot(x,y)>0.1){
+                            touchMove.str=x;touchMove.fwd=-y;moved=true;
                         }
                     }
                     if(src.handedness==='right'){
@@ -3002,11 +2997,8 @@ function loop(t){
                         triggerNow=!!(trig&&trig.pressed);
                         if(ax.length>=4){
                             const tx=ax[2];
-                            if(Math.abs(tx)>0.15){
-                                // Smooth turn: linear after deadzone, capped at 2 rad/s
-                                const sgn=Math.sign(tx),mag2=(Math.abs(tx)-0.15)/0.85;
-                                xrYaw-=sgn*mag2*2.0*dt;
-                            }
+                            // Linear turn: 1.4 rad/s at full push, simple deadzone
+                            if(Math.abs(tx)>0.2)xrYaw-=tx*1.4*dt;
                         }
                     }
                 }
