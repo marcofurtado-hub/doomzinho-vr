@@ -319,7 +319,70 @@ const ctrlMatR = new THREE.MeshBasicMaterial({color:0xff8060});
 const ctrlMeshL = new THREE.Mesh(ctrlGeo, ctrlMatL); ctrlL.add(ctrlMeshL);
 const ctrlMeshR = new THREE.Mesh(ctrlGeo, ctrlMatR); ctrlR.add(ctrlMeshR);
 
+// ===== VR UI SPRITES =====
+// Canvas-based sprites attached to camera (head-locked) for diegetic UI.
+function _vrMakeSprite(w,h){
+    const c=document.createElement('canvas');c.width=w;c.height=h;
+    const tex=new THREE.CanvasTexture(c);
+    const mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false});
+    const s=new THREE.Sprite(mat);s.renderOrder=9999;
+    return{sprite:s,canvas:c,ctx:c.getContext('2d'),tex};
+}
+function _vrDrawHp(ui,hp,maxHp){
+    const ctx=ui.ctx,c=ui.canvas,r=Math.max(0,hp/maxHp);
+    ctx.clearRect(0,0,c.width,c.height);
+    ctx.fillStyle='rgba(20,5,5,0.85)';ctx.fillRect(0,0,c.width,c.height);
+    ctx.strokeStyle='#a02020';ctx.lineWidth=4;ctx.strokeRect(2,2,c.width-4,c.height-4);
+    ctx.fillStyle=r>0.5?'#28aa2a':r>0.25?'#e8c020':'#e02020';
+    ctx.fillRect(8,8,(c.width-16)*r,c.height-16);
+    ctx.fillStyle='#fff';ctx.font='bold 36px monospace';ctx.textAlign='center';
+    ctx.fillText('HP '+Math.ceil(hp),c.width/2,c.height*0.65);
+    ui.tex.needsUpdate=true;
+}
+function _vrDrawText(ui,lines,opts){
+    opts=opts||{};
+    const ctx=ui.ctx,c=ui.canvas;
+    ctx.clearRect(0,0,c.width,c.height);
+    if(opts.bg){ctx.fillStyle=opts.bg;ctx.fillRect(0,0,c.width,c.height);}
+    ctx.textAlign='center';
+    let y=opts.startY||c.height*0.45;
+    for(const l of lines){
+        ctx.fillStyle=l.color||'#fff';
+        ctx.font=l.font||'bold 80px monospace';
+        ctx.fillText(l.text,c.width/2,y);
+        y+=l.lineH||100;
+    }
+    ui.tex.needsUpdate=true;
+}
+
+// HP bar — small, head-locked, below center of view
+const vrHpUI=_vrMakeSprite(256,64);
+vrHpUI.sprite.scale.set(0.45,0.11,1);
+vrHpUI.sprite.position.set(0,-0.55,-1.4);
+vrHpUI.sprite.visible=false;
+camera.add(vrHpUI.sprite);
+
+// Boss / wave announcement — top-center
+const vrAnnounceUI=_vrMakeSprite(1024,256);
+vrAnnounceUI.sprite.scale.set(2.4,0.6,1);
+vrAnnounceUI.sprite.position.set(0,0.55,-1.8);
+vrAnnounceUI.sprite.visible=false;
+camera.add(vrAnnounceUI.sprite);
+
+// Game over / Victory message — center
+const vrEndUI=_vrMakeSprite(1024,512);
+vrEndUI.sprite.scale.set(2.4,1.2,1);
+vrEndUI.sprite.position.set(0,0.1,-1.8);
+vrEndUI.sprite.visible=false;
+camera.add(vrEndUI.sprite);
+
+let _vrLastAnnounce='';
+
 let inVR = false;
+// Accumulated rotation from right thumbstick (added to head tracking)
+let xrYaw = 0;
+// Last-frame trigger state for edge detection on game-over restart
+let _vrTriggerWasDown = false;
 renderer.xr.addEventListener('sessionstart',()=>{
     inVR = true;
     try{initAudio();}catch(e){}
@@ -2912,7 +2975,7 @@ function loop(t){
     adaptQuality(t);
 
     // VR INPUT — read controllers BEFORE update so movement/shoot use latest
-    if(inVR&&state==='play'){
+    if(inVR){
         // Player look angle = HEAD direction (used for movement direction)
         try{
             const xrCam=renderer.xr.getCamera();
@@ -2926,6 +2989,7 @@ function loop(t){
             const session=renderer.xr.getSession();
             if(session){
                 let moved=false;
+                let triggerNow=false;
                 for(const src of session.inputSources){
                     if(!src.gamepad)continue;
                     const ax=src.gamepad.axes;
@@ -2934,13 +2998,31 @@ function loop(t){
                         if(Math.hypot(x,y)>0.12){touchMove.str=x;touchMove.fwd=-y;moved=true;}
                     }
                     if(src.handedness==='right'){
+                        // Trigger (button 0) → fire / restart
                         const trig=src.gamepad.buttons[0];
-                        const wasDown=mDown;
-                        mDown=!!(trig&&trig.pressed);
-                        if(mDown&&!wasDown)clicked=true; // edge-trigger for buffer
+                        triggerNow=!!(trig&&trig.pressed);
+                        // Right thumbstick X → smooth yaw turn (added to head tracking)
+                        if(ax.length>=4){
+                            const tx=ax[2];
+                            if(Math.abs(tx)>0.15){xrYaw-=tx*1.6*dt;}
+                        }
                     }
                 }
                 if(!moved){touchMove.str=0;touchMove.fwd=0;}
+                // Edge-detect trigger: press while dead/won restarts the game
+                if(triggerNow&&!_vrTriggerWasDown){
+                    if(state==='dead'){$over.style.display='none';startGame();}
+                    else if(state==='won'){$victory.style.display='none';state='dead';startGame();}
+                }
+                _vrTriggerWasDown=triggerNow;
+                // While playing, hold-trigger = continuous fire
+                if(state==='play'){
+                    const wasDown=mDown;
+                    mDown=triggerNow;
+                    if(mDown&&!wasDown)clicked=true;
+                }else{
+                    mDown=false;
+                }
             }
         }catch(e){}
     }
@@ -2951,10 +3033,59 @@ function loop(t){
     fpGun.visible=inVR;
     ctrlMeshL.visible=inVR;
     ctrlMeshR.visible=inVR;
+
+    // VR UI updates — head-locked sprites
     if(inVR){
-        // Place rig at player's feet — headset moves freely above
+        if(state==='play'){
+            _vrDrawHp(vrHpUI,Math.max(0,pl.hp),pl.maxHp);
+            vrHpUI.sprite.visible=true;
+            vrEndUI.sprite.visible=false;
+            // Mirror HTML announce overlay text into 3D sprite
+            const annOp=parseFloat($ann.style.opacity)||0;
+            if(annOp>0.05){
+                const txt=$annH1.textContent||'',sub=$annH2.textContent||'';
+                const key=txt+'|'+sub;
+                if(key!==_vrLastAnnounce){
+                    _vrDrawText(vrAnnounceUI,[
+                        {text:txt,color:'#e03818',font:'bold 100px monospace',lineH:110},
+                        {text:sub,color:'#e8c020',font:'bold 60px monospace'}
+                    ],{startY:120});
+                    _vrLastAnnounce=key;
+                }
+                vrAnnounceUI.sprite.material.opacity=annOp;
+                vrAnnounceUI.sprite.visible=true;
+            }else{vrAnnounceUI.sprite.visible=false;}
+        }else if(state==='dead'){
+            vrHpUI.sprite.visible=false;vrAnnounceUI.sprite.visible=false;
+            _vrDrawText(vrEndUI,[
+                {text:'GAME OVER',color:'#e03818',font:'bold 130px monospace',lineH:140},
+                {text:'SCORE: '+score,color:'#e8c020',font:'bold 60px monospace',lineH:80},
+                {text:'WAVE: '+waveNum+' · KILLS: '+kills,color:'#b8a898',font:'bold 50px monospace',lineH:100},
+                {text:'Pull TRIGGER to restart',color:'#fff',font:'bold 60px monospace'}
+            ],{bg:'rgba(0,0,0,0.85)',startY:150});
+            vrEndUI.sprite.material.opacity=1;
+            vrEndUI.sprite.visible=true;
+        }else if(state==='won'){
+            vrHpUI.sprite.visible=false;vrAnnounceUI.sprite.visible=false;
+            _vrDrawText(vrEndUI,[
+                {text:'CONGRATULATIONS!',color:'#ffcc20',font:'bold 90px monospace',lineH:120},
+                {text:'YOU DEFEATED THE INFERNO',color:'#e8c020',font:'bold 50px monospace',lineH:90},
+                {text:'SCORE: '+score,color:'#fff',font:'bold 60px monospace',lineH:100},
+                {text:'Pull TRIGGER for new game',color:'#fff',font:'bold 50px monospace'}
+            ],{bg:'rgba(20,5,0,0.85)',startY:130});
+            vrEndUI.sprite.material.opacity=1;
+            vrEndUI.sprite.visible=true;
+        }else{
+            vrHpUI.sprite.visible=false;vrAnnounceUI.sprite.visible=false;vrEndUI.sprite.visible=false;
+        }
+    }else{
+        vrHpUI.sprite.visible=false;vrAnnounceUI.sprite.visible=false;vrEndUI.sprite.visible=false;
+    }
+
+    if(inVR){
+        // Rig at player feet, accumulate yaw from right stick (added to head)
         cameraRig.position.set(pl.x,0,pl.z);
-        cameraRig.rotation.y=0; // head provides view rotation
+        cameraRig.rotation.y=xrYaw;
     }else{
         // Desktop FPS camera
         const px=state==='play'?pl.x:0,pz=state==='play'?pl.z:0;
